@@ -14,7 +14,7 @@ spec:
     spec:
       containers:
         - name: hello-container
-          image: idoidoido/hello-cute-app:v1
+          image: nikibiki12/hello:v1
           ports:
             - containerPort: 80
 ---
