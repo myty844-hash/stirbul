@@ -1,5 +1,12 @@
-FROM python:3
+FROM node:18-alpine
+
 WORKDIR /app
-COPY index.html .
-EXPOSE 8000
-CMD python -m http.server 8000
+
+COPY package.json package-lock.json* ./
+RUN npm install
+
+COPY . .
+
+EXPOSE 3000
+
+CMD ["npm", "start"]
