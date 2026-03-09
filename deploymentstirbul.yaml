@@ -14,7 +14,7 @@ spec:
     spec:
       containers:
         - name: hello-container
-          image: nikibiki12/hello:v2
+          image: nikibiki12/hello:latest
           ports:
             - containerPort: 8000
 ---
