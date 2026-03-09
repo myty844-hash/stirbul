@@ -28,7 +28,7 @@ spec:
             - name: SQLSERVER_QUERY
               value: "SELECT TOP 5 * FROM amitai"
           ports:
-            - containerPort: 8000
+            - containerPort: 3000
 ---
 apiVersion: v1
 kind: Service
@@ -38,7 +38,7 @@ spec:
   selector:
     app: stirbul-site
   ports:
-    - port: 8000
-      targetPort: 8000
+    - port: 3000
+      targetPort: 3000
       nodePort: 30084
   type: NodePort
