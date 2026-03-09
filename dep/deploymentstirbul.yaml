@@ -14,7 +14,7 @@ spec:
     spec:
       containers:
         - name: stirbul-web
-          image: stirbul-sql-site:latest
+          image: nikibiki12/hello:latest
           imagePullPolicy: IfNotPresent
           env:
             - name: SQLSERVER_HOST
