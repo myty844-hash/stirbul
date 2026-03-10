@@ -3,7 +3,9 @@ kind: CronJob
 metadata:
   name: {{ .Release.Name }}-daily-reset
 spec:
-  schedule: "0 0 * * *" 
+  # Reset every night at midnight
+  schedule: "0 0 * * *"
+  concurrencyPolicy: Replace
   jobTemplate:
     spec:
       template:
@@ -19,17 +21,16 @@ spec:
                 {{- end }}
                 {{- end }}
               command: ["/bin/bash", "-c"]
-args:
+              args:
                 - |
                   set -e
                   
-                  echo "--- Step 1: Running Restore Script ---"
-                  # We use a single sqlcmd call. If this fails, 'set -e' will stop the pod.
+                  echo "--- Step 1: Executing Database Restore ---"
                   /opt/mssql-tools/bin/sqlcmd -S "$SQLSERVER_HOST,$SQLSERVER_PORT" -U "$SQLSERVER_USER" -P "$SQLSERVER_PASSWORD" -d master -Q \
                   "SET NOCOUNT ON;
                    DECLARE @LatestPath NVARCHAR(400);
                    
-                   -- 1. Find the backup
+                   -- 1. Find the latest full backup path from MSDB history
                    SELECT TOP 1 @LatestPath = bmf.physical_device_name
                    FROM msdb.dbo.backupset bs
                    JOIN msdb.dbo.backupmediafamily bmf ON bs.media_set_id = bmf.media_set_id
@@ -38,19 +39,29 @@ args:
 
                    IF @LatestPath IS NULL 
                    BEGIN
-                     RAISERROR('CRITICAL: No backup found in MSDB history!', 16, 1);
+                     RAISERROR('CRITICAL ERROR: No backup history found for database [amitai]!', 16, 1);
                      RETURN;
                    END
 
-                   PRINT 'RESTORING FROM: ' + @LatestPath;
+                   PRINT 'RESTORING FROM FILE: ' + @LatestPath;
 
-                   -- 2. Kick users and restore
-                   ALTER DATABASE [amitai] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
+                   -- 2. Force disconnect users only if the database currently exists
+                   IF EXISTS (SELECT name FROM sys.databases WHERE name = 'amitai')
+                   BEGIN
+                        PRINT 'Database exists. Dropping active connections...';
+                        ALTER DATABASE [amitai] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
+                   END
+
+                   -- 3. Perform the Restore (using REPLACE to overwrite current data)
+                   PRINT 'Starting RESTORE DATABASE...';
                    RESTORE DATABASE [amitai] FROM DISK = @LatestPath WITH REPLACE, RECOVERY;
-                   ALTER DATABASE [amitai] SET MULTI_USER;
                    
-                   PRINT 'RESTORE COMPLETED SUCCESSFULLY';"
+                   -- 4. Bring database back to multi-user mode
+                   ALTER DATABASE [amitai] SET MULTI_USER;
+                   PRINT '--- RESTORE COMPLETED SUCCESSFULLY ---';"
 
-                  echo "--- Step 2: Verification ---"
-                  /opt/mssql-tools/bin/sqlcmd -S "$SQLSERVER_HOST,$SQLSERVER_PORT" -U "$SQLSERVER_USER" -P "$SQLSERVER_PASSWORD" -d amitai -Q "SELECT TOP 1 * FROM dbo.amitai;"
+                  echo "--- Step 2: Final Data Verification ---"
+                  # This runs the query to prove the data is back
+                  /opt/mssql-tools/bin/sqlcmd -S "$SQLSERVER_HOST,$SQLSERVER_PORT" -U "$SQLSERVER_USER" -P "$SQLSERVER_PASSWORD" -d amitai -Q "SET NOCOUNT ON; SELECT TOP 1 * FROM dbo.amitai;"
+          
           restartPolicy: OnFailure
