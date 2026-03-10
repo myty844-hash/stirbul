@@ -29,7 +29,6 @@ spec:
                   "SET NOCOUNT ON;
                    DECLARE @LatestPath NVARCHAR(400);
                    
-                   -- Find the most recent full backup
                    SELECT TOP 1 @LatestPath = bmf.physical_device_name
                    FROM msdb.dbo.backupset bs
                    JOIN msdb.dbo.backupmediafamily bmf ON bs.media_set_id = bmf.media_set_id
@@ -44,27 +43,31 @@ spec:
 
                    PRINT 'RESTORING FROM FILE: ' + @LatestPath;
 
-                   -- Kick users if DB exists
                    IF EXISTS (SELECT name FROM sys.databases WHERE name = 'amitai')
                    BEGIN
                         ALTER DATABASE [amitai] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
                    END
 
-                   -- Restore and overwrite
                    RESTORE DATABASE [amitai] FROM DISK = @LatestPath WITH REPLACE, RECOVERY;
                    
                    ALTER DATABASE [amitai] SET MULTI_USER;
                    PRINT '--- RESTORE COMPLETED SUCCESSFULLY ---';"
 
-                  echo "--- Step 2: Generic Schema Verification ---"
-                  # This query reports the number of tables and total row count across the whole DB
+                  echo "--- Step 2: Deep Schema Verification ---"
+                  # This query bypasses permission filters to show you every user table found
                   /opt/mssql-tools/bin/sqlcmd -S "$SQLSERVER_HOST,$SQLSERVER_PORT" -U "$SQLSERVER_USER" -P "$SQLSERVER_PASSWORD" -d amitai -Q \
                   "SET NOCOUNT ON;
                    SELECT 
-                       (SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_TYPE = 'BASE TABLE') AS [Total_Tables_Restored],
-                       SUM(s.row_count) AS [Total_Rows_Across_All_Tables]
-                   FROM sys.dm_db_partition_stats s
-                   JOIN sys.indexes i ON s.object_id = i.object_id AND s.index_id = i.index_id
-                   WHERE i.type <= 1; -- 0:Heap, 1:Clustered"
+                       SCHEMA_NAME(schema_id) AS [Schema], 
+                       name AS [Table_Name], 
+                       create_date AS [Created_At]
+                   FROM sys.tables;
+
+                   SELECT 
+                       COUNT(*) AS [Total_Tables_Found],
+                       ISNULL(SUM(p.rows), 0) AS [Total_Rows_Count]
+                   FROM sys.tables t
+                   JOIN sys.partitions p ON t.object_id = p.object_id
+                   WHERE p.index_id IN (0,1);"
           
           restartPolicy: OnFailure
