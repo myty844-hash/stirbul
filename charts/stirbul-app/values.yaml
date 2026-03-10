@@ -1,6 +1,6 @@
 replicaCount: 2
 image:
-  repository: nikibiki12/hello
+  repository: idoidoido/hello-cute-app
   tag: v6
   pullPolicy: IfNotPresent
 service:
