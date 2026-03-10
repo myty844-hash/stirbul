@@ -1,0 +1,54 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ .Release.Name }}-sql-log-backup
+spec:
+  schedule: "*/5 * * * *" # Every 5 minutes
+  concurrencyPolicy: Forbid # Important: Don't let backups overlap if one hangs
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: sql-executor
+              image: "mcr.microsoft.com/mssql-tools:latest"
+              env:
+                {{- range $key, $val := .Values.env }}
+                {{- if ne $key "SQLSERVER_QUERY" }}
+                - name: {{ $key }}
+                  value: {{ $val | quote }}
+                {{- end }}
+                {{- end }}
+              command: ["/bin/bash", "-c"]
+              args:
+                - |
+                  set -e
+                  
+                  echo "--- Step 1: Running Transaction Log Backup ---"
+                  # We use Ola Hallengren's script to handle all user databases
+                  /opt/mssql-tools/bin/sqlcmd -S "$SQLSERVER_HOST,$SQLSERVER_PORT" -U "$SQLSERVER_USER" -P "$SQLSERVER_PASSWORD" -d master -Q \
+                  "EXECUTE [dbo].[DatabaseBackup] 
+                    @Databases = 'USER_DATABASES', 
+                    @Directory = 'C:\Backups', 
+                    @BackupType = 'LOG', 
+                    @Verify = 'Y',
+                    @CleanupTime = 24,
+                    @LogToTable = 'Y'"
+
+                  echo "--- Step 2: Verification ---"
+                  # Verify that at least one log backup succeeded in the last 6 minutes
+                  CHECK=$(/opt/mssql-tools/bin/sqlcmd -S "$SQLSERVER_HOST,$SQLSERVER_PORT" -U "$SQLSERVER_USER" -P "$SQLSERVER_PASSWORD" -d master -h -1 -Q \
+                  "SET NOCOUNT ON; 
+                   SELECT TOP 1 DatabaseName 
+                   FROM dbo.CommandLog 
+                   WHERE CommandType = 'BACKUP_LOG' 
+                   AND StartTime > DATEADD(mi, -6, GETDATE()) 
+                   AND ErrorNumber = 0")
+                  
+                  if [ -z "$CHECK" ]; then
+                    echo "LOG BACKUP FAILED: No success entry found in CommandLog."
+                    exit 1
+                  else
+                    echo "SUCCESS: Log backup completed for databases including $CHECK"
+                  fi
