@@ -1,0 +1,54 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ .Release.Name }}-sql-restore
+spec:
+  # Setting schedule to a far future date so it NEVER runs automatically
+  # You trigger it manually with: 
+  # kubectl create job --from=cronjob/{{ .Release.Name }}-sql-restore restore-manual-01
+  schedule: "0 0 1 1 *" 
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+            - name: sql-executor
+              image: "mcr.microsoft.com/mssql-tools:latest"
+              env:
+                {{- range $key, $val := .Values.env }}
+                {{- if ne $key "SQLSERVER_QUERY" }}
+                - name: {{ $key }}
+                  value: {{ $val | quote }}
+                {{- end }}
+                {{- end }}
+              command: ["/bin/bash", "-c"]
+              args:
+                - |
+                  set -e
+                  
+                  echo "--- Step 1: Identifying Latest Backup and Restoring ---"
+                  /opt/mssql-tools/bin/sqlcmd -S "$SQLSERVER_HOST,$SQLSERVER_PORT" -U "$SQLSERVER_USER" -P "$SQLSERVER_PASSWORD" -d master -Q \
+                  "DECLARE @LatestPath NVARCHAR(400);
+                   SELECT TOP 1 @LatestPath = bmf.physical_device_name
+                   FROM msdb.dbo.backupset bs
+                   JOIN msdb.dbo.backupmediafamily bmf ON bs.media_set_id = bmf.media_set_id
+                   WHERE bs.database_name = 'amitai' AND bs.type = 'D'
+                   ORDER BY bs.backup_finish_date DESC;
+
+                   IF @LatestPath IS NULL 
+                     RAISERROR('No backup found for database amitai', 16, 1);
+                   
+                   PRINT 'Restoring from: ' + @LatestPath;
+
+                   -- Kick users off to allow restore
+                   ALTER DATABASE [amitai] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
+
+                   -- Perform Restore
+                   RESTORE DATABASE [amitai] FROM DISK = @LatestPath WITH REPLACE, RECOVERY;
+
+                   -- Bring back online
+                   ALTER DATABASE [amitai] SET MULTI_USER;"
+
+                  echo "--- Step 2: Verification ---"
+                  /opt/mssql-tools/bin/sqlcmd -S "$SQLSERVER_HOST,$SQLSERVER_PORT" -U "$SQLSERVER_USER" -P "$SQLSERVER_PASSWORD" -d amitai -Q "SET NOCOUNT ON; {{ .Values.env.SQLSERVER_QUERY }}"
+          restartPolicy: OnFailure
