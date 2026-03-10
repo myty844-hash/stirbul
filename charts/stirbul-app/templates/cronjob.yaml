@@ -21,19 +21,20 @@ spec:
               command: ["/bin/bash", "-c"]
               args:
                 - |
-                  set -e # Exit immediately if a command fails
+                  set -e
                   
-                  echo "Downloading Ola Hallengren's Maintenance Solution..."
+                  echo "Step 1: Installing Ola Hallengren Maintenance Solution..."
                   curl -sL https://ola.hallengren.com/scripts/MaintenanceSolution.sql -o /tmp/ola.sql
                   
-                  echo "Installing/Updating Maintenance Procedures..."
+                  # Installing to 'master'
                   /opt/mssql-tools/bin/sqlcmd \
                     -S "$SQLSERVER_HOST,$SQLSERVER_PORT" \
                     -U "$SQLSERVER_USER" \
                     -P "$SQLSERVER_PASSWORD" \
                     -d master -i /tmp/ola.sql
 
-                  echo "Starting FULL Backup..."
+                  echo "Step 2: Executing FULL Backup to C:\Backups..."
+                  # Note: Using 'C:\Backups' as a Windows path and enabling @LogToTable
                   /opt/mssql-tools/bin/sqlcmd \
                     -S "$SQLSERVER_HOST,$SQLSERVER_PORT" \
                     -U "$SQLSERVER_USER" \
@@ -41,7 +42,23 @@ spec:
                     -d master -Q \
                   "EXECUTE [dbo].[DatabaseBackup] 
                     @Databases = 'USER_DATABASES', 
-                    @Directory = '/var/opt/mssql/backups', 
+                    @Directory = 'C:\Backups', 
                     @BackupType = 'FULL', 
-                    @Verify = 'Y'"
+                    @Verify = 'Y',
+                    @LogToTable = 'Y'"
+
+                  echo "Step 3: Verification Check..."
+                  # This query checks if any success was logged in the last 5 minutes
+                  LOG_CHECK=$(/opt/mssql-tools/bin/sqlcmd \
+                    -S "$SQLSERVER_HOST,$SQLSERVER_PORT" \
+                    -U "$SQLSERVER_USER" \
+                    -P "$SQLSERVER_PASSWORD" \
+                    -d master -h -1 -Q "SET NOCOUNT ON; SELECT TOP 1 DatabaseName FROM dbo.CommandLog WHERE StartTime > DATEADD(mi, -5, GETDATE()) AND ErrorNumber = 0")
+
+                  if [ -z "$LOG_CHECK" ]; then
+                    echo "FATAL ERROR: No successful backup log found in master.dbo.CommandLog!"
+                    exit 1
+                  else
+                    echo "Success: Backup confirmed for database: $LOG_CHECK"
+                  fi
           restartPolicy: OnFailure
