@@ -23,44 +23,62 @@ spec:
               args:
                 - |
                   set -e
-                  echo "--- Step 1: Restoring All Data from Backup ---"
-                  /opt/mssql-tools/bin/sqlcmd -S "$SQLSERVER_HOST,$SQLSERVER_PORT" -U "$SQLSERVER_USER" -P "$SQLSERVER_PASSWORD" -d master -Q \
-                  "SET NOCOUNT ON;
-                   DECLARE @TargetTime DATETIME = '$TARGET_TIME';
-                   DECLARE @FullBackup NVARCHAR(400), @DBName NVARCHAR(128), @FullFinishDate DATETIME, @Sql NVARCHAR(MAX);
+                  echo "--- Starting Clean PITR Restore ---"
+                  
+                  # We use a Here-Doc to keep the SQL syntax clean and avoid shell-injection glitches
+                  /opt/mssql-tools/bin/sqlcmd -S "$SQLSERVER_HOST,$SQLSERVER_PORT" -U "$SQLSERVER_USER" -P "$SQLSERVER_PASSWORD" -v TargetTime="$TARGET_TIME" -d master << 'EOF'
+                  SET NOCOUNT ON;
+                  DECLARE @TargetTime DATETIME = '$(TargetTime)';
+                  DECLARE @FullBackup NVARCHAR(400), @DBName NVARCHAR(128), @FullFinishDate DATETIME, @Sql NVARCHAR(MAX);
 
-                   -- Get latest backup info (Detects if it is amitai or anything else)
-                   SELECT TOP 1 @FullBackup = bmf.physical_device_name, @FullFinishDate = bs.backup_finish_date, @DBName = bs.database_name
-                   FROM msdb.dbo.backupset bs JOIN msdb.dbo.backupmediafamily bmf ON bs.media_set_id = bmf.media_set_id
-                   WHERE bs.type = 'D' ORDER BY bs.backup_finish_date DESC;
+                  -- Detect Latest Backup
+                  SELECT TOP 1 
+                      @FullBackup = bmf.physical_device_name, 
+                      @FullFinishDate = bs.backup_finish_date, 
+                      @DBName = bs.database_name
+                  FROM msdb.dbo.backupset bs 
+                  JOIN msdb.dbo.backupmediafamily bmf ON bs.media_set_id = bmf.media_set_id
+                  WHERE bs.type = 'D' 
+                  ORDER BY bs.backup_finish_date DESC;
 
-                   IF @FullBackup IS NULL BEGIN RAISERROR('No backups found!', 16, 1); RETURN; END
+                  IF @FullBackup IS NULL BEGIN PRINT 'ERROR: No backups found.'; RETURN; END
+                  PRINT '--- Detected DB: ' + @DBName + ' ---';
 
-                   -- Kick users and Restore Full (NORECOVERY to allow logs)
-                   SET @Sql = 'IF EXISTS (SELECT name FROM sys.databases WHERE name = ''' + @DBName + ''') ALTER DATABASE [' + @DBName + '] SET SINGLE_USER WITH ROLLBACK IMMEDIATE; 
-                               RESTORE DATABASE [' + @DBName + '] FROM DISK = ''' + @FullBackup + ''' WITH REPLACE, NORECOVERY;';
-                   EXEC(@Sql);
+                  -- Restore Full (Keep in NORECOVERY)
+                  SET @Sql = 'ALTER DATABASE [' + @DBName + '] SET SINGLE_USER WITH ROLLBACK IMMEDIATE; 
+                              RESTORE DATABASE [' + @DBName + '] FROM DISK = ''' + @FullBackup + ''' WITH REPLACE, NORECOVERY;';
+                  EXEC(@Sql);
 
-                   -- Apply all logs in the chain up to TARGET_TIME
-                   DECLARE @LogPath NVARCHAR(400);
-                   DECLARE log_cursor CURSOR FOR 
-                     SELECT bmf.physical_device_name FROM msdb.dbo.backupset bs 
-                     JOIN msdb.dbo.backupmediafamily bmf ON bs.media_set_id = bmf.media_set_id
-                     WHERE bs.database_name = @DBName AND bs.type = 'L' AND bs.backup_finish_date > @FullFinishDate AND bs.backup_start_date <= @TargetTime;
-                   OPEN log_cursor; FETCH NEXT FROM log_cursor INTO @LogPath;
-                   WHILE @@FETCH_STATUS = 0 BEGIN
-                       SET @Sql = 'RESTORE LOG [' + @DBName + '] FROM DISK = ''' + @LogPath + ''' WITH NORECOVERY;';
-                       EXEC(@Sql); FETCH NEXT FROM log_cursor INTO @LogPath;
-                   END
-                   CLOSE log_cursor; DEALLOCATE log_cursor;
+                  -- Play Log Chain
+                  DECLARE @LogPath NVARCHAR(400);
+                  DECLARE log_cursor CURSOR FOR 
+                    SELECT bmf.physical_device_name FROM msdb.dbo.backupset bs 
+                    JOIN msdb.dbo.backupmediafamily bmf ON bs.media_set_id = bmf.media_set_id
+                    WHERE bs.database_name = @DBName AND bs.type = 'L' 
+                    AND bs.backup_finish_date > @FullFinishDate 
+                    AND bs.backup_start_date <= @TargetTime;
 
-                   -- Finalize recovery
-                   SET @Sql = 'RESTORE DATABASE [' + @DBName + '] WITH RECOVERY, STOPAT = ''' + CAST(@TargetTime AS VARCHAR) + '''; ALTER DATABASE [' + @DBName + '] SET MULTI_USER;';
-                   EXEC(@Sql);
-                   PRINT '--- SUCCESS: [' + @DBName + '] RESTORED WITH ALL TABLES ---';
+                  OPEN log_cursor; FETCH NEXT FROM log_cursor INTO @LogPath;
+                  WHILE @@FETCH_STATUS = 0 BEGIN
+                      PRINT 'Applying Log: ' + @LogPath;
+                      SET @Sql = 'RESTORE LOG [' + @DBName + '] FROM DISK = ''' + @LogPath + ''' WITH NORECOVERY;';
+                      EXEC(@Sql); 
+                      FETCH NEXT FROM log_cursor INTO @LogPath;
+                  END
+                  CLOSE log_cursor; DEALLOCATE log_cursor;
 
-                   -- Step 2: Show me what we got
-                   PRINT '--- Verification: Listing All Restored Tables ---';
-                   SET @Sql = 'SELECT SCHEMA_NAME(schema_id) AS [Schema], name AS [Table_Name] FROM [' + @DBName + '].sys.tables ORDER BY name;';
-                   EXEC(@Sql);"
-          restartPolicy: OnFailure
+                  -- Finalize
+                  PRINT 'Finalizing Recovery to: ' + CAST(@TargetTime AS VARCHAR);
+                  SET @Sql = 'RESTORE DATABASE [' + @DBName + '] WITH RECOVERY, STOPAT = ''' + CAST(@TargetTime AS VARCHAR) + ''';';
+                  EXEC(@Sql);
+                  
+                  SET @Sql = 'ALTER DATABASE [' + @DBName + '] SET MULTI_USER;';
+                  EXEC(@Sql);
+
+                  PRINT '--- SUCCESS: Database Restored ---';
+                  
+                  -- Verification: List Tables
+                  PRINT '--- Restored Tables List ---';
+                  SET @Sql = 'SELECT name FROM [' + @DBName + '].sys.tables;';
+                  EXEC(@Sql);
+                  EOF
