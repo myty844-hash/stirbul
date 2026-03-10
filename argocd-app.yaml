@@ -1,0 +1,23 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: stirbul-application
+  namespace: argocd # Assuming ArgoCD is installed in this namespace
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/myty844-hash/stirbul
+    targetRevision: HEAD
+    path: charts/stirbul-app
+    helm:
+      valueFiles:
+        - values.yaml
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: default
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

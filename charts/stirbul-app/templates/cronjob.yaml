@@ -1,0 +1,22 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ .Release.Name }}-backup-job
+spec:
+  schedule: {{ .Values.cronjob.schedule | quote }}
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+            - name: backup
+              image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+              env:
+                {{- range $key, $val := .Values.env }}
+                {{- if ne $key "SQLSERVER_QUERY" }} # Skip query for backup if not needed
+                - name: {{ $key }}
+                  value: {{ $val | quote }}
+                {{- end }}
+                {{- end }}
+              command: ["/bin/sh", "-c", "echo 'Backup job running at $(date)'"]
+          restartPolicy: OnFailure
