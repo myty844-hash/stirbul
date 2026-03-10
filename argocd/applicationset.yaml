@@ -19,7 +19,7 @@ spec:
         targetRevision: main
         path: dep
       destination:
-        server: '{{ url }}'
+        server: '{{ .url }}'
         namespace: default
       syncPolicy:
         automated:
