@@ -3,7 +3,6 @@ kind: CronJob
 metadata:
   name: {{ .Release.Name }}-daily-reset
 spec:
-  # This schedule resets the DB every night at midnight
   schedule: "0 0 * * *" 
   jobTemplate:
     spec:
@@ -41,13 +40,10 @@ spec:
 
                    PRINT 'Resetting database [amitai] using: ' + @LatestPath;
 
-                   -- Kick active users/connections
                    ALTER DATABASE [amitai] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
-
-                   -- Restore and overwrite
                    RESTORE DATABASE [amitai] FROM DISK = @LatestPath WITH REPLACE, RECOVERY;
-
-                   -- Re-enable access
                    ALTER DATABASE [amitai] SET MULTI_USER;"
                    
                   echo "--- Reset Complete ---"
+          # This is the line that was missing:
+          restartPolicy: OnFailure
