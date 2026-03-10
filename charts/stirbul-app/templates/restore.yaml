@@ -19,33 +19,38 @@ spec:
                 {{- end }}
                 {{- end }}
               command: ["/bin/bash", "-c"]
-              args:
+args:
                 - |
                   set -e
                   
-                  echo "--- Step 1: Locating Latest Backup File ---"
-                  # We use a subshell to capture the path to ensure it exists
-                  LATEST_BAK=$(/opt/mssql-tools/bin/sqlcmd -S "$SQLSERVER_HOST,$SQLSERVER_PORT" -U "$SQLSERVER_USER" -P "$SQLSERVER_PASSWORD" -d master -h -1 -Q "SET NOCOUNT ON; SELECT TOP 1 bmf.physical_device_name FROM msdb.dbo.backupset bs JOIN msdb.dbo.backupmediafamily bmf ON bs.media_set_id = bmf.media_set_id WHERE bs.database_name = 'amitai' AND bs.type = 'D' ORDER BY bs.backup_finish_date DESC")
-                  
-                  # Clean up whitespace from the SQL output
-                  LATEST_BAK=$(echo $LATEST_BAK | xargs)
-
-                  if [ -z "$LATEST_BAK" ] || [ "$LATEST_BAK" == "NULL" ]; then
-                    echo "ERROR: No backup path found in MSDB history."
-                    exit 1
-                  fi
-
-                  echo "Targeting Backup: $LATEST_BAK"
-
-                  echo "--- Step 2: Executing Restore ---"
-                  # Added the -b flag to ensure the shell knows if SQL fails
-                  /opt/mssql-tools/bin/sqlcmd -b -S "$SQLSERVER_HOST,$SQLSERVER_PORT" -U "$SQLSERVER_USER" -P "$SQLSERVER_PASSWORD" -d master -Q \
-                  "ALTER DATABASE [amitai] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
-                   RESTORE DATABASE [amitai] FROM DISK = N'$LATEST_BAK' WITH REPLACE, RECOVERY;
-                   ALTER DATABASE [amitai] SET MULTI_USER;"
+                  echo "--- Step 1: Running Restore Script ---"
+                  # We use a single sqlcmd call. If this fails, 'set -e' will stop the pod.
+                  /opt/mssql-tools/bin/sqlcmd -S "$SQLSERVER_HOST,$SQLSERVER_PORT" -U "$SQLSERVER_USER" -P "$SQLSERVER_PASSWORD" -d master -Q \
+                  "SET NOCOUNT ON;
+                   DECLARE @LatestPath NVARCHAR(400);
                    
-                  echo "--- Step 3: Verifying Data ---"
-                  /opt/mssql-tools/bin/sqlcmd -S "$SQLSERVER_HOST,$SQLSERVER_PORT" -U "$SQLSERVER_USER" -P "$SQLSERVER_PASSWORD" -d amitai -Q "SET NOCOUNT ON; SELECT TOP 1 * FROM dbo.amitai;"
-                  
-                  echo "--- Reset Successfully Completed ---"
+                   -- 1. Find the backup
+                   SELECT TOP 1 @LatestPath = bmf.physical_device_name
+                   FROM msdb.dbo.backupset bs
+                   JOIN msdb.dbo.backupmediafamily bmf ON bs.media_set_id = bmf.media_set_id
+                   WHERE bs.database_name = 'amitai' AND bs.type = 'D'
+                   ORDER BY bs.backup_finish_date DESC;
+
+                   IF @LatestPath IS NULL 
+                   BEGIN
+                     RAISERROR('CRITICAL: No backup found in MSDB history!', 16, 1);
+                     RETURN;
+                   END
+
+                   PRINT 'RESTORING FROM: ' + @LatestPath;
+
+                   -- 2. Kick users and restore
+                   ALTER DATABASE [amitai] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
+                   RESTORE DATABASE [amitai] FROM DISK = @LatestPath WITH REPLACE, RECOVERY;
+                   ALTER DATABASE [amitai] SET MULTI_USER;
+                   
+                   PRINT 'RESTORE COMPLETED SUCCESSFULLY';"
+
+                  echo "--- Step 2: Verification ---"
+                  /opt/mssql-tools/bin/sqlcmd -S "$SQLSERVER_HOST,$SQLSERVER_PORT" -U "$SQLSERVER_USER" -P "$SQLSERVER_PASSWORD" -d amitai -Q "SELECT TOP 1 * FROM dbo.amitai;"
           restartPolicy: OnFailure
