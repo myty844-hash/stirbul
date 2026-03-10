@@ -1,0 +1,29 @@
+# Stirbul Application Helm Values
+
+replicaCount: 2
+
+image:
+  repository: nikibiki12/hello
+  tag: v6
+  pullPolicy: IfNotPresent
+
+service:
+  type: NodePort
+  port: 3000
+  targetPort: 3000
+  nodePort: 30084
+
+env:
+  SQLSERVER_HOST: "10.100.102.94"
+  SQLSERVER_PORT: "1433"
+  SQLSERVER_USER: "sa"
+  SQLSERVER_PASSWORD: "YourStrongPassword123!"
+  SQLSERVER_QUERY: "SELECT TOP 5 * FROM amitai"
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 512Mi
+  requests:
+    cpu: 250m
+    memory: 256Mi

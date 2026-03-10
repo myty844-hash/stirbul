@@ -1,0 +1,28 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: stirbul-backup-job
+  namespace: default
+spec:
+  schedule: "0 2 * * *"
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+          - name: backup
+            image: nikibiki12/hello:v6
+            env:
+            - name: SQLSERVER_HOST
+              value: "10.100.102.94"
+            - name: SQLSERVER_PORT
+              value: "1433"
+            - name: SQLSERVER_USER
+              value: "sa"
+            - name: SQLSERVER_PASSWORD
+              value: "YourStrongPassword123!"
+            command:
+            - /bin/sh
+            - -c
+            - echo "Backup job running at $(date)"
+          restartPolicy: OnFailure
