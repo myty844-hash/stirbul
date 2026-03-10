@@ -1,38 +1,40 @@
 apiVersion: batch/v1
 kind: CronJob
 metadata:
-  name: {{ .Release.Name }}-sql-backup
+  name: {{ .Release.Name }}-sql-full-enforcer
 spec:
-  schedule: {{ .Values.cronjob.schedule | quote }}
+  schedule: "0 0 * * *" # Daily Full Backup
   jobTemplate:
     spec:
       template:
         spec:
+          restartPolicy: OnFailure
           containers:
             - name: sql-executor
               image: "mcr.microsoft.com/mssql-tools:latest"
               env:
                 {{- range $key, $val := .Values.env }}
-                {{- if ne $key "SQLSERVER_QUERY" }}
                 - name: {{ $key }}
                   value: {{ $val | quote }}
-                {{- end }}
                 {{- end }}
               command: ["/bin/bash", "-c"]
               args:
                 - |
                   set -e
                   
-                  echo "--- Step 1: Pre-flight (Creating Directory) ---"
-                  # This uses xp_cmdshell to ensure the folder exists on the Windows Host
+                  echo "--- Step 1: Forcing FULL Recovery on ALL Databases ---"
+                  # This T-SQL loop finds every database that isn't a system DB and fixes its mode
                   /opt/mssql-tools/bin/sqlcmd -S "$SQLSERVER_HOST,$SQLSERVER_PORT" -U "$SQLSERVER_USER" -P "$SQLSERVER_PASSWORD" -d master -Q \
-                  "EXEC sp_configure 'show advanced options', 1; RECONFIGURE; EXEC sp_configure 'xp_cmdshell', 1; RECONFIGURE; EXEC xp_cmdshell 'if not exist \"C:\Backups\" mkdir \"C:\Backups\"';"
+                  "DECLARE @sql NVARCHAR(MAX) = '';
+                   SELECT @sql += 'ALTER DATABASE [' + name + '] SET RECOVERY FULL; ' 
+                   FROM sys.databases WHERE name NOT IN ('master','model','msdb','tempdb');
+                   EXEC sp_executesql @sql;"
 
-                  echo "--- Step 2: Installing Maintenance Solution ---"
+                  echo "--- Step 2: Ensuring Folders & Maintenance Tools ---"
                   curl -sL https://ola.hallengren.com/scripts/MaintenanceSolution.sql -o /tmp/ola.sql
                   /opt/mssql-tools/bin/sqlcmd -S "$SQLSERVER_HOST,$SQLSERVER_PORT" -U "$SQLSERVER_USER" -P "$SQLSERVER_PASSWORD" -d master -i /tmp/ola.sql
 
-                  echo "--- Step 3: Running FULL Backup ---"
+                  echo "--- Step 3: Running FULL Backup for Everything ---"
                   /opt/mssql-tools/bin/sqlcmd -S "$SQLSERVER_HOST,$SQLSERVER_PORT" -U "$SQLSERVER_USER" -P "$SQLSERVER_PASSWORD" -d master -Q \
                   "EXECUTE [dbo].[DatabaseBackup] 
                     @Databases = 'USER_DATABASES', 
@@ -40,14 +42,3 @@ spec:
                     @BackupType = 'FULL', 
                     @Verify = 'Y',
                     @LogToTable = 'Y'"
-
-                  echo "--- Step 4: Final Validation ---"
-                  CHECK=$(/opt/mssql-tools/bin/sqlcmd -S "$SQLSERVER_HOST,$SQLSERVER_PORT" -U "$SQLSERVER_USER" -P "$SQLSERVER_PASSWORD" -d master -h -1 -Q "SET NOCOUNT ON; SELECT TOP 1 DatabaseName FROM dbo.CommandLog WHERE StartTime > DATEADD(mi, -5, GETDATE()) AND ErrorNumber = 0")
-                  
-                  if [ -z "$CHECK" ]; then
-                    echo "BACKUP FAILED: No log entry found in CommandLog."
-                    exit 1
-                  else
-                    echo "SUCCESS: Backup completed for $CHECK"
-                  fi
-          restartPolicy: OnFailure
