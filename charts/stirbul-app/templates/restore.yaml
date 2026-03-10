@@ -3,7 +3,6 @@ kind: CronJob
 metadata:
   name: {{ .Release.Name }}-daily-reset
 spec:
-  # Reset every night at midnight
   schedule: "0 0 * * *"
   concurrencyPolicy: Replace
   jobTemplate:
@@ -30,7 +29,7 @@ spec:
                   "SET NOCOUNT ON;
                    DECLARE @LatestPath NVARCHAR(400);
                    
-                   -- 1. Find the latest full backup path from MSDB history
+                   -- Find the most recent full backup
                    SELECT TOP 1 @LatestPath = bmf.physical_device_name
                    FROM msdb.dbo.backupset bs
                    JOIN msdb.dbo.backupmediafamily bmf ON bs.media_set_id = bmf.media_set_id
@@ -39,29 +38,33 @@ spec:
 
                    IF @LatestPath IS NULL 
                    BEGIN
-                     RAISERROR('CRITICAL ERROR: No backup history found for database [amitai]!', 16, 1);
+                     RAISERROR('CRITICAL ERROR: No backup history found!', 16, 1);
                      RETURN;
                    END
 
                    PRINT 'RESTORING FROM FILE: ' + @LatestPath;
 
-                   -- 2. Force disconnect users only if the database currently exists
+                   -- Kick users if DB exists
                    IF EXISTS (SELECT name FROM sys.databases WHERE name = 'amitai')
                    BEGIN
-                        PRINT 'Database exists. Dropping active connections...';
                         ALTER DATABASE [amitai] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
                    END
 
-                   -- 3. Perform the Restore (using REPLACE to overwrite current data)
-                   PRINT 'Starting RESTORE DATABASE...';
+                   -- Restore and overwrite
                    RESTORE DATABASE [amitai] FROM DISK = @LatestPath WITH REPLACE, RECOVERY;
                    
-                   -- 4. Bring database back to multi-user mode
                    ALTER DATABASE [amitai] SET MULTI_USER;
                    PRINT '--- RESTORE COMPLETED SUCCESSFULLY ---';"
 
-                  echo "--- Step 2: Final Data Verification ---"
-                  # This runs the query to prove the data is back
-                  /opt/mssql-tools/bin/sqlcmd -S "$SQLSERVER_HOST,$SQLSERVER_PORT" -U "$SQLSERVER_USER" -P "$SQLSERVER_PASSWORD" -d amitai -Q "SET NOCOUNT ON; SELECT TOP 1 * FROM dbo.amitai;"
+                  echo "--- Step 2: Generic Schema Verification ---"
+                  # This query reports the number of tables and total row count across the whole DB
+                  /opt/mssql-tools/bin/sqlcmd -S "$SQLSERVER_HOST,$SQLSERVER_PORT" -U "$SQLSERVER_USER" -P "$SQLSERVER_PASSWORD" -d amitai -Q \
+                  "SET NOCOUNT ON;
+                   SELECT 
+                       (SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_TYPE = 'BASE TABLE') AS [Total_Tables_Restored],
+                       SUM(s.row_count) AS [Total_Rows_Across_All_Tables]
+                   FROM sys.dm_db_partition_stats s
+                   JOIN sys.indexes i ON s.object_id = i.object_id AND s.index_id = i.index_id
+                   WHERE i.type <= 1; -- 0:Heap, 1:Clustered"
           
           restartPolicy: OnFailure
