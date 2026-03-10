@@ -1,7 +1,7 @@
 apiVersion: batch/v1
 kind: CronJob
 metadata:
-  name: {{ .Release.Name }}-backup-job
+  name: {{ .Release.Name }}-sql-backup
 spec:
   schedule: {{ .Values.cronjob.schedule | quote }}
   jobTemplate:
@@ -9,14 +9,31 @@ spec:
       template:
         spec:
           containers:
-            - name: backup
-              image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+            - name: sql-executor
+              # Using the mssql-tools image ensures 'sqlcmd' is available
+              image: "mcr.microsoft.com/mssql-tools:latest"
               env:
                 {{- range $key, $val := .Values.env }}
-                {{- if ne $key "SQLSERVER_QUERY" }} # Skip query for backup if not needed
+                {{- if ne $key "SQLSERVER_QUERY" }}
                 - name: {{ $key }}
                   value: {{ $val | quote }}
                 {{- end }}
                 {{- end }}
-              command: ["/bin/sh", "-c", "echo 'Backup job running at $(date)'"]
+              command: ["/bin/bash", "-c"]
+              args:
+                - |
+                  # Download Ola Hallengren's script
+                  curl -L https://ola.hallengren.com/scripts/MaintenanceSolution.sql -o /tmp/ola.sql
+                  
+                  # Execute using your specific value keys
+                  /opt/mssql-tools/bin/sqlcmd \
+                    -S "$SQLSERVER_HOST,$SQLSERVER_PORT" \
+                    -U "$SQLSERVER_USER" \
+                    -P "$SQLSERVER_PASSWORD" \
+                    -d master -i /tmp/ola.sql -Q \
+                  "EXECUTE [dbo].[DatabaseBackup] 
+                    @Databases = 'USER_DATABASES', 
+                    @Directory = '/var/opt/mssql/backups', 
+                    @BackupType = 'FULL', 
+                    @Verify = 'Y'"
           restartPolicy: OnFailure
