@@ -12,6 +12,7 @@ app.use(express.static('public'));
 // SQL Server configuration
 const config = {
   server: '10.100.102.94',
+  database: 'amitai',
   port: 1433,
   authentication: {
     type: 'default',
@@ -31,7 +32,7 @@ app.get('/api/query', async (req, res) => {
   try {
     let pool = await sql.connect(config);
     let result = await pool.request()
-      .query('SELECT TOP 100 * FROM amitai ORDER BY ID DESC');
+      .query('SELECT TOP 100 * FROM dbo.amitai ORDER BY ID DESC');
     
     await pool.close();
     
