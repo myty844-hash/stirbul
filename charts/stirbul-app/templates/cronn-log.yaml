@@ -15,37 +15,20 @@ spec:
               image: "mcr.microsoft.com/mssql-tools:latest"
               env:
                 {{- range $key, $val := .Values.env }}
-                {{- if ne $key "SQLSERVER_QUERY" }}
                 - name: {{ $key }}
                   value: {{ $val | quote }}
-                {{- end }}
                 {{- end }}
               command: ["/bin/bash", "-c"]
               args:
                 - |
                   set -e
+                  echo "--- Running Log Backup for All User DBs ---"
                   
-                  echo "--- Running Transaction Log Backup ---"
-                  # We use -b to ensure sqlcmd returns a failure code to bash if SQL fails
                   /opt/mssql-tools/bin/sqlcmd -b -S "$SQLSERVER_HOST,$SQLSERVER_PORT" -U "$SQLSERVER_USER" -P "$SQLSERVER_PASSWORD" -d master -Q \
                   "EXECUTE [dbo].[DatabaseBackup] 
                     @Databases = 'USER_DATABASES', 
                     @Directory = 'C:\Backups', 
                     @BackupType = 'LOG', 
-                    @Verify = 'Y',
+                    @Verify = 'Y', 
+                    @CleanupTime = 24, -- Deletes logs older than 24h
                     @LogToTable = 'Y'"
-
-                  echo "--- Verification ---"
-                  # We check if the command logged ANY success, not just in the last 6 mins
-                  CHECK=$(/opt/mssql-tools/bin/sqlcmd -S "$SQLSERVER_HOST,$SQLSERVER_PORT" -U "$SQLSERVER_USER" -P "$SQLSERVER_PASSWORD" -d master -h -1 -Q \
-                  "SET NOCOUNT ON; 
-                   SELECT TOP 1 DatabaseName 
-                   FROM dbo.CommandLog 
-                   WHERE CommandType = 'BACKUP_LOG' AND ErrorNumber = 0
-                   ORDER BY StartTime DESC")
-                  
-                  if [ -z "$CHECK" ]; then
-                    echo "WARNING: No log backup history found yet. This is normal for a first run."
-                  else
-                    echo "SUCCESS: Latest log backup verified for $CHECK"
-                  fi
