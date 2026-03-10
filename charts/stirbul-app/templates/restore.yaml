@@ -9,6 +9,7 @@ spec:
     spec:
       template:
         spec:
+          restartPolicy: OnFailure
           containers:
             - name: sql-executor
               image: "mcr.microsoft.com/mssql-tools:latest"
@@ -23,15 +24,14 @@ spec:
               args:
                 - |
                   set -e
-                  echo "--- Starting Clean PITR Restore ---"
+                  echo "--- Starting Dynamic PITR Restore ---"
                   
-                  # We use a Here-Doc to keep the SQL syntax clean and avoid shell-injection glitches
                   /opt/mssql-tools/bin/sqlcmd -S "$SQLSERVER_HOST,$SQLSERVER_PORT" -U "$SQLSERVER_USER" -P "$SQLSERVER_PASSWORD" -v TargetTime="$TARGET_TIME" -d master << 'EOF'
                   SET NOCOUNT ON;
                   DECLARE @TargetTime DATETIME = '$(TargetTime)';
                   DECLARE @FullBackup NVARCHAR(400), @DBName NVARCHAR(128), @FullFinishDate DATETIME, @Sql NVARCHAR(MAX);
 
-                  -- Detect Latest Backup
+                  -- 1. Detect Database and Latest Full Backup
                   SELECT TOP 1 
                       @FullBackup = bmf.physical_device_name, 
                       @FullFinishDate = bs.backup_finish_date, 
@@ -41,15 +41,15 @@ spec:
                   WHERE bs.type = 'D' 
                   ORDER BY bs.backup_finish_date DESC;
 
-                  IF @FullBackup IS NULL BEGIN PRINT 'ERROR: No backups found.'; RETURN; END
-                  PRINT '--- Detected DB: ' + @DBName + ' ---';
+                  IF @FullBackup IS NULL BEGIN PRINT 'ERROR: No backup history found.'; RETURN; END
+                  PRINT '--- DB Detected: ' + @DBName + ' ---';
 
-                  -- Restore Full (Keep in NORECOVERY)
+                  -- 2. Restore Full Backup (NORECOVERY)
                   SET @Sql = 'ALTER DATABASE [' + @DBName + '] SET SINGLE_USER WITH ROLLBACK IMMEDIATE; 
                               RESTORE DATABASE [' + @DBName + '] FROM DISK = ''' + @FullBackup + ''' WITH REPLACE, NORECOVERY;';
                   EXEC(@Sql);
 
-                  -- Play Log Chain
+                  -- 3. Apply Transaction Logs in Sequence
                   DECLARE @LogPath NVARCHAR(400);
                   DECLARE log_cursor CURSOR FOR 
                     SELECT bmf.physical_device_name FROM msdb.dbo.backupset bs 
@@ -67,7 +67,7 @@ spec:
                   END
                   CLOSE log_cursor; DEALLOCATE log_cursor;
 
-                  -- Finalize
+                  -- 4. Final Recovery to PIT
                   PRINT 'Finalizing Recovery to: ' + CAST(@TargetTime AS VARCHAR);
                   SET @Sql = 'RESTORE DATABASE [' + @DBName + '] WITH RECOVERY, STOPAT = ''' + CAST(@TargetTime AS VARCHAR) + ''';';
                   EXEC(@Sql);
@@ -75,10 +75,10 @@ spec:
                   SET @Sql = 'ALTER DATABASE [' + @DBName + '] SET MULTI_USER;';
                   EXEC(@Sql);
 
-                  PRINT '--- SUCCESS: Database Restored ---';
-                  
-                  -- Verification: List Tables
-                  PRINT '--- Restored Tables List ---';
+                  PRINT '--- PITR COMPLETE ---';
+
+                  -- 5. List all restored tables
+                  PRINT '--- Restored Tables ---';
                   SET @Sql = 'SELECT name FROM [' + @DBName + '].sys.tables;';
                   EXEC(@Sql);
                   EOF
