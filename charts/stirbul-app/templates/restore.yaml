@@ -17,33 +17,31 @@ spec:
                 - name: {{ $key }}
                   value: {{ $val | quote }}
                 {{- end }}
-                # The exact second you want to go back to
                 - name: TARGET_TIME
                   value: "2026-03-10 16:15:00" 
               command: ["/bin/bash", "-c"]
               args:
                 - |
                   set -e
-                  echo "--- Step 1: Dynamic PITR Restore ---"
+                  echo "--- Step 1: Restoring All Data from Backup ---"
                   /opt/mssql-tools/bin/sqlcmd -S "$SQLSERVER_HOST,$SQLSERVER_PORT" -U "$SQLSERVER_USER" -P "$SQLSERVER_PASSWORD" -d master -Q \
                   "SET NOCOUNT ON;
                    DECLARE @TargetTime DATETIME = '$TARGET_TIME';
                    DECLARE @FullBackup NVARCHAR(400), @DBName NVARCHAR(128), @FullFinishDate DATETIME, @Sql NVARCHAR(MAX);
 
-                   -- Get latest backup info from MSDB
+                   -- Get latest backup info (Detects if it is amitai or anything else)
                    SELECT TOP 1 @FullBackup = bmf.physical_device_name, @FullFinishDate = bs.backup_finish_date, @DBName = bs.database_name
                    FROM msdb.dbo.backupset bs JOIN msdb.dbo.backupmediafamily bmf ON bs.media_set_id = bmf.media_set_id
                    WHERE bs.type = 'D' ORDER BY bs.backup_finish_date DESC;
 
                    IF @FullBackup IS NULL BEGIN RAISERROR('No backups found!', 16, 1); RETURN; END
-                   PRINT 'Targeting Database: [' + @DBName + ']';
 
-                   -- Kick users and Restore Full (NORECOVERY)
+                   -- Kick users and Restore Full (NORECOVERY to allow logs)
                    SET @Sql = 'IF EXISTS (SELECT name FROM sys.databases WHERE name = ''' + @DBName + ''') ALTER DATABASE [' + @DBName + '] SET SINGLE_USER WITH ROLLBACK IMMEDIATE; 
                                RESTORE DATABASE [' + @DBName + '] FROM DISK = ''' + @FullBackup + ''' WITH REPLACE, NORECOVERY;';
                    EXEC(@Sql);
 
-                   -- Apply Log Chain
+                   -- Apply all logs in the chain up to TARGET_TIME
                    DECLARE @LogPath NVARCHAR(400);
                    DECLARE log_cursor CURSOR FOR 
                      SELECT bmf.physical_device_name FROM msdb.dbo.backupset bs 
@@ -51,26 +49,18 @@ spec:
                      WHERE bs.database_name = @DBName AND bs.type = 'L' AND bs.backup_finish_date > @FullFinishDate AND bs.backup_start_date <= @TargetTime;
                    OPEN log_cursor; FETCH NEXT FROM log_cursor INTO @LogPath;
                    WHILE @@FETCH_STATUS = 0 BEGIN
-                       PRINT 'Applying Log: ' + @LogPath;
                        SET @Sql = 'RESTORE LOG [' + @DBName + '] FROM DISK = ''' + @LogPath + ''' WITH NORECOVERY;';
                        EXEC(@Sql); FETCH NEXT FROM log_cursor INTO @LogPath;
                    END
                    CLOSE log_cursor; DEALLOCATE log_cursor;
 
-                   -- Final Recovery to Point-in-Time
+                   -- Finalize recovery
                    SET @Sql = 'RESTORE DATABASE [' + @DBName + '] WITH RECOVERY, STOPAT = ''' + CAST(@TargetTime AS VARCHAR) + '''; ALTER DATABASE [' + @DBName + '] SET MULTI_USER;';
                    EXEC(@Sql);
-                   PRINT '--- RESTORE SUCCESSFUL ---';
+                   PRINT '--- SUCCESS: [' + @DBName + '] RESTORED WITH ALL TABLES ---';
 
-                   -- Step 2: Auto-Discovery Verification
-                   PRINT '--- Step 2: Data Verification ---';
-                   SET @Sql = 'USE [' + @DBName + ']; 
-                               DECLARE @FirstTable NVARCHAR(MAX); 
-                               SELECT TOP 1 @FirstTable = ''['' + s.name + ''].['' + t.name + '']'' FROM sys.tables t JOIN sys.schemas s ON t.schema_id = s.schema_id;
-                               IF @FirstTable IS NOT NULL BEGIN 
-                                   PRINT ''Found Data in Table: '' + @FirstTable; 
-                                   EXEC(''SELECT TOP 5 * FROM '' + @FirstTable); 
-                               END
-                               ELSE PRINT ''Success: Database restored, but it contains no tables.'';';
+                   -- Step 2: Show me what we got
+                   PRINT '--- Verification: Listing All Restored Tables ---';
+                   SET @Sql = 'SELECT SCHEMA_NAME(schema_id) AS [Schema], name AS [Table_Name] FROM [' + @DBName + '].sys.tables ORDER BY name;';
                    EXEC(@Sql);"
           restartPolicy: OnFailure
