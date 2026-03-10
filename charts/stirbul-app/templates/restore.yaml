@@ -29,7 +29,6 @@ spec:
                   "SET NOCOUNT ON;
                    DECLARE @LatestPath NVARCHAR(400);
                    
-                   -- Find latest full backup
                    SELECT TOP 1 @LatestPath = bmf.physical_device_name
                    FROM msdb.dbo.backupset bs
                    JOIN msdb.dbo.backupmediafamily bmf ON bs.media_set_id = bmf.media_set_id
@@ -54,17 +53,21 @@ spec:
                    ALTER DATABASE [amitai] SET MULTI_USER;
                    PRINT '--- RESTORE COMPLETED SUCCESSFULLY ---';"
 
-                  echo "--- Step 2: Fixing Orphaned Users (Optional) ---"
-                  # This ensures the DB user is correctly mapped to the server login after restore
+                  echo "--- Step 2: Fixing Orphaned Users ---"
                   /opt/mssql-tools/bin/sqlcmd -S "$SQLSERVER_HOST,$SQLSERVER_PORT" -U "$SQLSERVER_USER" -P "$SQLSERVER_PASSWORD" -d amitai -Q \
                   "IF EXISTS (SELECT * FROM sys.database_principals WHERE name = '$SQLSERVER_USER')
                    BEGIN
+                       PRINT 'Repairing user mapping...';
                        ALTER USER [$SQLSERVER_USER] WITH LOGIN = [$SQLSERVER_USER];
                    END"
 
-                  echo "--- Step 3: Verification ---"
-                  # Running the specific query you provided
+                  echo "--- Step 3: Explicit Verification ---"
+                  # We use -d amitai and the full schema name dbo.amitai
                   /opt/mssql-tools/bin/sqlcmd -S "$SQLSERVER_HOST,$SQLSERVER_PORT" -U "$SQLSERVER_USER" -P "$SQLSERVER_PASSWORD" -d amitai -Q \
-                  "SET NOCOUNT ON; SELECT * FROM amitai;"
+                  "SET NOCOUNT ON; 
+                   IF OBJECT_ID('dbo.amitai') IS NOT NULL
+                       SELECT TOP 5 * FROM dbo.amitai;
+                   ELSE
+                       PRINT 'WARNING: Database restored, but table [dbo].[amitai] was not found. Check your schema!';"
           
           restartPolicy: OnFailure
