@@ -17,7 +17,7 @@ spec:
       source:
         repoURL: https://github.com/myty844-hash/stirbul
         targetRevision: main
-        path: .
+        path: dep
       destination:
         server: '{{ url }}'
         namespace: default
