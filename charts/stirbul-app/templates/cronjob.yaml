@@ -10,7 +10,6 @@ spec:
         spec:
           containers:
             - name: sql-executor
-              # Using the mssql-tools image ensures 'sqlcmd' is available
               image: "mcr.microsoft.com/mssql-tools:latest"
               env:
                 {{- range $key, $val := .Values.env }}
@@ -22,15 +21,24 @@ spec:
               command: ["/bin/bash", "-c"]
               args:
                 - |
-                  # Download Ola Hallengren's script
-                  curl -L https://ola.hallengren.com/scripts/MaintenanceSolution.sql -o /tmp/ola.sql
+                  set -e # Exit immediately if a command fails
                   
-                  # Execute using your specific value keys
+                  echo "Downloading Ola Hallengren's Maintenance Solution..."
+                  curl -sL https://ola.hallengren.com/scripts/MaintenanceSolution.sql -o /tmp/ola.sql
+                  
+                  echo "Installing/Updating Maintenance Procedures..."
                   /opt/mssql-tools/bin/sqlcmd \
                     -S "$SQLSERVER_HOST,$SQLSERVER_PORT" \
                     -U "$SQLSERVER_USER" \
                     -P "$SQLSERVER_PASSWORD" \
-                    -d master -i /tmp/ola.sql -Q \
+                    -d master -i /tmp/ola.sql
+
+                  echo "Starting FULL Backup..."
+                  /opt/mssql-tools/bin/sqlcmd \
+                    -S "$SQLSERVER_HOST,$SQLSERVER_PORT" \
+                    -U "$SQLSERVER_USER" \
+                    -P "$SQLSERVER_PASSWORD" \
+                    -d master -Q \
                   "EXECUTE [dbo].[DatabaseBackup] 
                     @Databases = 'USER_DATABASES', 
                     @Directory = '/var/opt/mssql/backups', 
