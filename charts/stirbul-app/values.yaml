@@ -1,7 +1,7 @@
 replicaCount: 2
 image:
   repository: idoidoido/hello-cute-app
-  tag: v6
+  tag: v9
   pullPolicy: IfNotPresent
 service:
   type: NodePort
