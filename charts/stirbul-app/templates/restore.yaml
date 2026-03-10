@@ -1,12 +1,10 @@
 apiVersion: batch/v1
 kind: CronJob
 metadata:
-  name: {{ .Release.Name }}-sql-restore
+  name: {{ .Release.Name }}-daily-reset
 spec:
-  # Setting schedule to a far future date so it NEVER runs automatically
-  # You trigger it manually with: 
-  # kubectl create job --from=cronjob/{{ .Release.Name }}-sql-restore restore-manual-01
-  schedule: "0 0 1 1 *" 
+  # This schedule resets the DB every night at midnight
+  schedule: "0 0 * * *" 
   jobTemplate:
     spec:
       template:
@@ -26,7 +24,7 @@ spec:
                 - |
                   set -e
                   
-                  echo "--- Step 1: Identifying Latest Backup and Restoring ---"
+                  echo "--- Auto-Reset: Finding Latest Backup ---"
                   /opt/mssql-tools/bin/sqlcmd -S "$SQLSERVER_HOST,$SQLSERVER_PORT" -U "$SQLSERVER_USER" -P "$SQLSERVER_PASSWORD" -d master -Q \
                   "DECLARE @LatestPath NVARCHAR(400);
                    SELECT TOP 1 @LatestPath = bmf.physical_device_name
@@ -36,19 +34,20 @@ spec:
                    ORDER BY bs.backup_finish_date DESC;
 
                    IF @LatestPath IS NULL 
-                     RAISERROR('No backup found for database amitai', 16, 1);
-                   
-                   PRINT 'Restoring from: ' + @LatestPath;
+                   BEGIN
+                     PRINT 'No backup found. Reset aborted.';
+                     RETURN;
+                   END
 
-                   -- Kick users off to allow restore
+                   PRINT 'Resetting database [amitai] using: ' + @LatestPath;
+
+                   -- Kick active users/connections
                    ALTER DATABASE [amitai] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
 
-                   -- Perform Restore
+                   -- Restore and overwrite
                    RESTORE DATABASE [amitai] FROM DISK = @LatestPath WITH REPLACE, RECOVERY;
 
-                   -- Bring back online
+                   -- Re-enable access
                    ALTER DATABASE [amitai] SET MULTI_USER;"
-
-                  echo "--- Step 2: Verification ---"
-                  /opt/mssql-tools/bin/sqlcmd -S "$SQLSERVER_HOST,$SQLSERVER_PORT" -U "$SQLSERVER_USER" -P "$SQLSERVER_PASSWORD" -d amitai -Q "SET NOCOUNT ON; {{ .Values.env.SQLSERVER_QUERY }}"
-          restartPolicy: OnFailure
+                   
+                  echo "--- Reset Complete ---"
