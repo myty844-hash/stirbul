@@ -23,23 +23,17 @@ spec:
                 - |
                   set -e
                   
-                  echo "Step 1: Installing Ola Hallengren Maintenance Solution..."
-                  curl -sL https://ola.hallengren.com/scripts/MaintenanceSolution.sql -o /tmp/ola.sql
-                  
-                  # Installing to 'master'
-                  /opt/mssql-tools/bin/sqlcmd \
-                    -S "$SQLSERVER_HOST,$SQLSERVER_PORT" \
-                    -U "$SQLSERVER_USER" \
-                    -P "$SQLSERVER_PASSWORD" \
-                    -d master -i /tmp/ola.sql
+                  echo "--- Step 1: Pre-flight (Creating Directory) ---"
+                  # This uses xp_cmdshell to ensure the folder exists on the Windows Host
+                  /opt/mssql-tools/bin/sqlcmd -S "$SQLSERVER_HOST,$SQLSERVER_PORT" -U "$SQLSERVER_USER" -P "$SQLSERVER_PASSWORD" -d master -Q \
+                  "EXEC sp_configure 'show advanced options', 1; RECONFIGURE; EXEC sp_configure 'xp_cmdshell', 1; RECONFIGURE; EXEC xp_cmdshell 'if not exist \"C:\Backups\" mkdir \"C:\Backups\"';"
 
-                  echo "Step 2: Executing FULL Backup to C:\Backups..."
-                  # Note: Using 'C:\Backups' as a Windows path and enabling @LogToTable
-                  /opt/mssql-tools/bin/sqlcmd \
-                    -S "$SQLSERVER_HOST,$SQLSERVER_PORT" \
-                    -U "$SQLSERVER_USER" \
-                    -P "$SQLSERVER_PASSWORD" \
-                    -d master -Q \
+                  echo "--- Step 2: Installing Maintenance Solution ---"
+                  curl -sL https://ola.hallengren.com/scripts/MaintenanceSolution.sql -o /tmp/ola.sql
+                  /opt/mssql-tools/bin/sqlcmd -S "$SQLSERVER_HOST,$SQLSERVER_PORT" -U "$SQLSERVER_USER" -P "$SQLSERVER_PASSWORD" -d master -i /tmp/ola.sql
+
+                  echo "--- Step 3: Running FULL Backup ---"
+                  /opt/mssql-tools/bin/sqlcmd -S "$SQLSERVER_HOST,$SQLSERVER_PORT" -U "$SQLSERVER_USER" -P "$SQLSERVER_PASSWORD" -d master -Q \
                   "EXECUTE [dbo].[DatabaseBackup] 
                     @Databases = 'USER_DATABASES', 
                     @Directory = 'C:\Backups', 
@@ -47,18 +41,13 @@ spec:
                     @Verify = 'Y',
                     @LogToTable = 'Y'"
 
-                  echo "Step 3: Verification Check..."
-                  # This query checks if any success was logged in the last 5 minutes
-                  LOG_CHECK=$(/opt/mssql-tools/bin/sqlcmd \
-                    -S "$SQLSERVER_HOST,$SQLSERVER_PORT" \
-                    -U "$SQLSERVER_USER" \
-                    -P "$SQLSERVER_PASSWORD" \
-                    -d master -h -1 -Q "SET NOCOUNT ON; SELECT TOP 1 DatabaseName FROM dbo.CommandLog WHERE StartTime > DATEADD(mi, -5, GETDATE()) AND ErrorNumber = 0")
-
-                  if [ -z "$LOG_CHECK" ]; then
-                    echo "FATAL ERROR: No successful backup log found in master.dbo.CommandLog!"
+                  echo "--- Step 4: Final Validation ---"
+                  CHECK=$(/opt/mssql-tools/bin/sqlcmd -S "$SQLSERVER_HOST,$SQLSERVER_PORT" -U "$SQLSERVER_USER" -P "$SQLSERVER_PASSWORD" -d master -h -1 -Q "SET NOCOUNT ON; SELECT TOP 1 DatabaseName FROM dbo.CommandLog WHERE StartTime > DATEADD(mi, -5, GETDATE()) AND ErrorNumber = 0")
+                  
+                  if [ -z "$CHECK" ]; then
+                    echo "BACKUP FAILED: No log entry found in CommandLog."
                     exit 1
                   else
-                    echo "Success: Backup confirmed for database: $LOG_CHECK"
+                    echo "SUCCESS: Backup completed for $CHECK"
                   fi
           restartPolicy: OnFailure
